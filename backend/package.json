@@ -12,6 +12,8 @@
   "dependencies": {
     "bcrypt": "^6.0.0",
     "cookie-parser": "^1.4.7",
-    "dotenv": "^17.4.2"
+    "dotenv": "^17.4.2",
+    "mailgen": "^2.0.36",
+    "nodemailer": "^10.0.1"
   }
 }
