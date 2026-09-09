@@ -1,7 +1,6 @@
 import Mailgen from "mailgen";
 import nodemailer from "nodemailer";
 
-
 /* 
     options:{
         email: ,
@@ -9,43 +8,50 @@ import nodemailer from "nodemailer";
         mailGenContent:
     }
 */
-const sendEmail =async function(options){
+const sendEmail = async function (options) {
+    if (!options?.email || !options?.subject || !options?.mailGenContent) {
+        throw new TypeError("Email requires a recipient, subject, and mail content");
+    }
 
-    const mailGenerator=new Mailgen({
+    const appName = process.env.MAIL_PRODUCT_NAME || "Secure DMS";
+    const appUrl = process.env.MAIL_PRODUCT_URL || "http://localhost:5173";
+    const smtpPort = Number(process.env.SMTP_MAILTRAP_PORT || process.env.SMTP_PORT);
+
+    if (!process.env.SMTP_MAILTRAP_HOST || !smtpPort || !process.env.SMTP_MAILTRAP_USERNAME || !process.env.SMTP_MAILTRAP_PASSWORD) {
+        throw new Error("SMTP configuration is incomplete");
+    }
+
+    const mailGenerator = new Mailgen({
         theme: "default",
-        product:{
-            name: "SIH",
-            link: "https://SIH.example.com"
+        product: {
+            name: appName,
+            link: appUrl
         }
     });
 
     const emailTextual = mailGenerator.generatePlaintext(options.mailGenContent);
-    const emailHtml= mailGenerator.generate(options.mailGenContent);
+    const emailHtml = mailGenerator.generate(options.mailGenContent);
 
-    const transporter=nodemailer.createTransport({
+    const transporter = nodemailer.createTransport({
         host: process.env.SMTP_MAILTRAP_HOST,
-        port: process.env.SMTP_MAILTRAP_PORT,
-        auth:{
+        port: smtpPort,
+        secure: process.env.SMTP_SECURE === "true",
+        auth: {
             user: process.env.SMTP_MAILTRAP_USERNAME,
             pass: process.env.SMTP_MAILTRAP_PASSWORD
         }
     });
 
-    const mail={
-        from: "projectManagement@example.com",
+    const mail = {
+        from: process.env.SMTP_FROM || process.env.SMTP_MAILTRAP_USERNAME,
         to: options.email,
         subject: options.subject,
         text: emailTextual,
         html: emailHtml
-    }
+    };
 
-    try{
-        await transporter.sendMail(mail);
-    } catch(error){
-        console.error("Try checking the env variables");
-        console.error("Error: ", error);
-    }
-}
+    return transporter.sendMail(mail);
+};
 
 const emailVerificationEmailGenContent = function (username, emailVerificationLink){
     return {

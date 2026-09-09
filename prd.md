@@ -87,7 +87,7 @@ Build a secure, centralized, intelligent Document Management System that enables
 
 | Category | Requirement |
 |---|---|
-| Security | AES-256 at rest, TLS in transit, OAuth2/SAML + MFA, RBAC enforced at every API layer |
+| Security | AES-256 at rest, TLS in transit, OAuth2 + MFA, RBAC enforced at every API layer |
 | Integrity | SHA-256 hash-chain ledger; tampering must be detectable and localizable to the exact broken entry |
 | Privacy | AI service must not send case data to any third-party API; self-hosted LLM required |
 | Auditability | Every access/action logged with actor, timestamp, and action type; logs immutable |

@@ -12,7 +12,28 @@ A centralized, secure platform for law enforcement, courts, and investigative de
 
 ---
 
-## 2. High-Level Component Architecture
+## 2. Technology Stack
+
+| Layer | Technology | Purpose |
+|---|---|---|
+| Frontend | React.js | Case dashboard, document viewer, verification UI |
+| Backend API | Node.js (Express) | REST API, business logic, RBAC enforcement |
+| Database | PostgreSQL (with `pgvector` extension) | Case metadata, users/roles, extracted fields, ledger entries, and vector embeddings — all in one DB |
+| Object storage | MinIO (S3-compatible, self-hosted) | Encrypted storage of raw document files |
+| Translation | IndicTrans2 | Multilingual translation (Hindi/regional languages) |
+| NER / extraction | spaCy (fine-tuned) | Structured field extraction, document classification |
+| LLM | Self-hosted open-weight model (Llama 3 / Mistral via Ollama) | Summarization, timeline generation, Q&A — never a third-party API |
+| Integrity | Custom SHA-256 hash-chain ledger | Tamper-evident audit logging |
+| Auth | OAuth2 + MFA (Passport.js) | Login and identity verification |
+| Signatures | Public/private key pair per user (IT Act 2000-compliant) | Non-repudiation on verify/approve actions |
+| Containers | Docker | Deployment, service isolation (AI service in its own security zone) |
+| Hosting | Government-approved cloud (e.g., MeghRaj) or on-prem | Data sovereignty |
+
+**Note:** `pgvector` runs as an extension inside the same PostgreSQL instance — there is no separate vector database. This keeps the stack to one primary datastore plus MinIO for files, which is simpler to build and explain than running a dedicated vector DB alongside Postgres.
+
+---
+
+## 3. High-Level Component Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────────┐
@@ -22,22 +43,22 @@ A centralized, secure platform for law enforcement, courts, and investigative de
                                  │ HTTPS/TLS
 ┌───────────────────────────────▼───────────────────────────────────┐
 │                         API Gateway / Auth Layer                  │
-│         OAuth2/SAML · MFA · JWT session validation                │
+│         OAuth2 · MFA · JWT session validation                     │
 └───────────────────────────────┬───────────────────────────────────┘
                                  │
         ┌────────────────────────┼─────────────────────────┐
         ▼                        ▼                          ▼
 ┌───────────────┐      ┌──────────────────┐        ┌──────────────────┐
 │  Core Backend   │      │  AI/NLP Service   │        │  Ledger Service   │
-│ (Node.js/Django)│      │ (Python, isolated │        │ (hash-chain,      │
+│ (Node.js/Express)│     │ (Python, isolated │        │ (hash-chain,      │
 │  RBAC, case mgmt│      │  security zone)   │        │  append-only)     │
 └───────┬────────┘      └────────┬──────────┘        └────────┬─────────┘
         │                        │                             │
         ▼                        ▼                             ▼
 ┌───────────────┐      ┌──────────────────┐        ┌──────────────────┐
-│  PostgreSQL     │      │  Vector store      │        │  ledger_entries    │
-│  (metadata,     │      │  (pgvector or      │        │  table (Postgres,  │
-│  users, roles,  │      │  Qdrant/FAISS)     │        │  insert-only)      │
+│  PostgreSQL     │      │  pgvector          │        │  ledger_entries    │
+│  (metadata,     │      │  (extension on the │        │  table (Postgres,  │
+│  users, roles,  │      │  same Postgres DB) │        │  insert-only)      │
 │  case data)     │      │                    │        │                    │
 └───────────────┘      └──────────────────┘        └──────────────────┘
         │
@@ -52,10 +73,10 @@ A centralized, secure platform for law enforcement, courts, and investigative de
 
 ---
 
-## 3. Document Processing Pipeline
+## 4. Document Processing Pipeline
 
 ```
-Upload → NLP Translation (IndicTrans2) → NER Extraction (spaCy/transformer)
+Upload → NLP Translation (IndicTrans2) → NER Extraction (spaCy, fine-tuned)
    → MANDATORY Human Verification (digitally signed)
    → [Hash-chain ledger entry]  +  [RAG indexing, access-tagged]
    → Access-filtered retrieval → LLM query → Cited, source-traceable response
@@ -69,7 +90,7 @@ Upload → NLP Translation (IndicTrans2) → NER Extraction (spaCy/transformer)
 
 ---
 
-## 4. Data Model (PostgreSQL — core tables)
+## 5. Data Model (PostgreSQL — core tables)
 
 ### `users`
 | column | type | notes |
@@ -152,7 +173,7 @@ Upload → NLP Translation (IndicTrans2) → NER Extraction (spaCy/transformer)
 
 ---
 
-## 5. API Endpoints
+## 6. API Endpoints
 
 Base URL: `/api/v1`
 All endpoints require a valid session (`Authorization: Bearer <JWT>`) except `/auth/*`. All responses logged for audit; write/verify/approve endpoints additionally create a `ledger_entries` row.
@@ -160,7 +181,7 @@ All endpoints require a valid session (`Authorization: Bearer <JWT>`) except `/a
 ### Auth
 | Method | Endpoint | Description |
 |---|---|---|
-| POST | `/auth/login` | OAuth2/SAML login, returns JWT (pre-MFA) |
+| POST | `/auth/login` | OAuth2 login, returns JWT (pre-MFA) |
 | POST | `/auth/mfa/verify` | Verify OTP, returns full session JWT |
 | POST | `/auth/logout` | Invalidate session |
 | GET | `/auth/me` | Current user + role + permissions |
@@ -218,13 +239,13 @@ All endpoints require a valid session (`Authorization: Bearer <JWT>`) except `/a
 
 ---
 
-## 6. Security Architecture
+## 7. Security Architecture
 
 | Layer | Mechanism | Protects against |
 |---|---|---|
 | Transport | TLS | Network eavesdropping |
 | Storage | AES-256 at rest | Physical/storage-level theft |
-| Authentication | OAuth2/SAML + MFA | Identity spoofing, credential theft |
+| Authentication | OAuth2 + MFA | Identity spoofing, credential theft |
 | Authorization | RBAC + case-level `case_access` | Unauthorized viewing across roles/cases |
 | Integrity | SHA-256 hash-chain ledger | Silent/undetected tampering |
 | Non-repudiation | Digital signatures on verify/approve actions | Denial of authorship, forged approvals |
@@ -240,9 +261,9 @@ All endpoints require a valid session (`Authorization: Bearer <JWT>`) except `/a
 
 ---
 
-## 7. Deployment
+## 8. Deployment
 
-- Docker containers per service (backend, AI service, ledger service), orchestrated via Kubernetes
+- Docker containers per service (backend, AI service, ledger service)
 - Hosted on government-approved cloud (e.g., MeghRaj for India) or on-prem
 - MinIO and PostgreSQL run within the same trusted network boundary — no public internet exposure
 - CI/CD with signed container images; secrets managed via a vault (e.g., HashiCorp Vault), never in code/env files
