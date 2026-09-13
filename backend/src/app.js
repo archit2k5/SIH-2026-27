@@ -4,6 +4,7 @@ import cookieParser from "cookie-parser";
 import { ENV } from "./config/env.js";
 import { ApiResponse } from "./utils/api-response.js";
 import { ApiError } from "./utils/api-error.js";
+import { apiRouter } from "./routes/index.js";
 
 const app = express();
 
@@ -35,6 +36,10 @@ app.get("/api/v1/health", (req, res) => {
         )
     );
 });
+
+// Mount All API v1 Routes
+app.use("/api/v1", apiRouter);
+
 
 // Centralized Error Handling Middleware
 app.use((err, req, res, next) => {

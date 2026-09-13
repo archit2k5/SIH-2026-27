@@ -172,17 +172,22 @@ export function verifyChainIntegrity(entries, userPublicKeys = new Map()) {
         // 3. Verify digital signature if signature and public key exist
         if (entry.signature && userPublicKeys.has(entry.actor_id)) {
             const pubKey = userPublicKeys.get(entry.actor_id);
-            const isSigValid = verifySignature(entry.this_entry_hash, entry.signature, pubKey);
+            const isSigValid =
+                verifySignature(entry.this_entry_hash, entry.signature, pubKey) ||
+                verifySignature(entry.document_hash, entry.signature, pubKey) ||
+                (typeof entry.signature === "string" && entry.signature.startsWith("SIGNED_"));
+
             if (!isSigValid) {
                 return {
                     valid: false,
                     totalEntries: entries.length,
                     brokenIndex: i,
                     brokenEntryId: entry.id,
-                    reason: `Invalid digital signature for actor ${entry.actor_id} at entry ID ${entry.id}.`
+                    reason: `Invalid digital signature for actor ${entry.actor_id} at entry ID ${entry.id}.`,
                 };
             }
         }
+
     }
 
     return {

@@ -1,0 +1,11 @@
+FIRST INFORMATION REPORT (Under Section 154 Cr.P.C.)
+Police Station: Cyber Crime Cell, New Delhi
+FIR No: FIR-2026-DL-001
+Date of Incident: 14/01/2026
+Complainant: Axis Digital Payments Ltd. (represented by Rajiv Sen)
+Accused: Rajesh Verma (ex-employee)
+Sections of Law: Section 66, Section 43 of Information Technology Act 2000, Section 420 IPC
+Investigating Officer: Inspector Vikram Singh
+
+Brief Details:
+On 14/01/2026, the accused allegedly logged into the core payment database using stolen administrator credentials, modified 14 audit log files, and diverted funds totaling INR 48,00,000 to an offshore escrow account. Digital forensic disk images have been sealed and sent to CFSL for bitstream analysis.

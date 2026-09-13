@@ -120,4 +120,19 @@ export class DocumentModel {
         const result = await query(sql, [id]);
         return result.rows[0]?.current_version;
     }
+
+    /**
+     * Update security sensitivity level of a document
+     */
+    static async updateSensitivity(id, sensitivity) {
+        const sql = `
+            UPDATE documents
+            SET sensitivity = $1, updated_at = NOW()
+            WHERE id = $2
+            RETURNING *
+        `;
+        const result = await query(sql, [sensitivity, id]);
+        return result.rows[0] || null;
+    }
 }
+

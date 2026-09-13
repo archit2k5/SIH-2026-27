@@ -44,8 +44,14 @@ export class LedgerModel {
             const previousEntryHash = lastEntry ? lastEntry.this_entry_hash : "GENESIS";
 
             // 2. Reserve next sequence value for ID
-            const seqRes = await client.query("SELECT nextval('ledger_entries_id_seq') as next_id");
-            const nextId = seqRes.rows[0].next_id;
+            let nextId;
+            try {
+                const seqRes = await client.query("SELECT nextval('ledger_entries_id_seq') as next_id");
+                nextId = seqRes.rows[0].next_id;
+            } catch {
+                const maxRes = await client.query("SELECT COALESCE(MAX(id), 0) + 1 as next_id FROM ledger_entries");
+                nextId = parseInt(maxRes.rows[0].next_id, 10);
+            }
             const timestamp = new Date();
 
             // 3. Compute this entry's cryptographic hash

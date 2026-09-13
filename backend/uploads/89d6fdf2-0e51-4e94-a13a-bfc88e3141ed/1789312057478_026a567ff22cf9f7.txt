@@ -1,0 +1,8 @@
+FIRST INFORMATION REPORT
+FIR No: TEST-FIR-1789312057464
+Police Station: Hauz Khas PS, New Delhi
+Date of Incident: 12/03/2026
+Accused: Vikramaditya Singhania
+Complainant: Priya Malhotra
+Sections of Law: Section 420 IPC, Section 66 IT Act
+Details: Unauthorized electronic transfer of funds from company escrow accounts.

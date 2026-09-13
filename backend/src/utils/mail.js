@@ -71,22 +71,60 @@ const emailVerificationEmailGenContent = function (username, emailVerificationLi
     }
 }
 
-const forgotPasswordEmailGenContent = function (username, forgetPasswordLink){
+const forgotPasswordEmailGenContent = function (username, forgetPasswordLink) {
     return {
-        body:{
+        body: {
             name: username,
             intro: "Welcome to our App, we are excited to have you on board",
-            action:{
+            action: {
                 instructions: "To reset your password, click on the button below",
-                button:{
+                button: {
                     color: "#22BC64",
                     text: "Forget Password",
-                    link: forgetPasswordLink
-                }
+                    link: forgetPasswordLink,
+                },
             },
-            outro: "Need help, or feel stuck? Reply with help on the mail and we will be pleased to help"
+            outro: "Need help, or feel stuck? Reply with help on the mail and we will be pleased to help",
         },
-    }
-}
+    };
+};
 
-export { sendEmail, emailVerificationEmailGenContent, forgotPasswordEmailGenContent };
+const otpEmailGenContent = function (username, otp) {
+
+    return {
+        body: {
+            name: username,
+            intro: "Your Two-Factor Authentication (MFA) One-Time Password for Secure DMS access:",
+            action: {
+                instructions: `Use the following 6-digit verification code to complete your login. Valid for 10 minutes:`,
+                button: {
+                    color: "#2563EB",
+                    text: `OTP: ${otp}`,
+                    link: "#",
+                },
+            },
+            outro: "If you did not request this login attempt, please notify your system administrator immediately.",
+        },
+    };
+};
+
+const sendOtpMail = async function (email, otp, username = "Officer") {
+    try {
+        return await sendEmail({
+            email,
+            subject: "Your Secure DMS One-Time Password (OTP)",
+            mailGenContent: otpEmailGenContent(username, otp),
+        });
+    } catch (err) {
+        // Non-blocking in local development / testing
+        return false;
+    }
+};
+
+export {
+    sendEmail,
+    emailVerificationEmailGenContent,
+    forgotPasswordEmailGenContent,
+    sendOtpMail,
+    otpEmailGenContent,
+};
