@@ -195,6 +195,16 @@ export async function initDb() {
                 verified_at TIMESTAMPTZ,
                 created_at TIMESTAMPTZ DEFAULT NOW()
             );`,
+            `CREATE TABLE IF NOT EXISTS document_contents (
+                id TEXT PRIMARY KEY DEFAULT uuid_generate_v4(),
+                document_id TEXT NOT NULL,
+                extracted_text TEXT NOT NULL DEFAULT '',
+                extraction_method TEXT,
+                page_count INT,
+                created_at TIMESTAMPTZ DEFAULT NOW(),
+                updated_at TIMESTAMPTZ DEFAULT NOW(),
+                CONSTRAINT unique_document_content UNIQUE (document_id)
+            );`,
             `CREATE TABLE IF NOT EXISTS ledger_entries (
                 id SERIAL PRIMARY KEY,
                 document_id TEXT,
@@ -437,6 +447,7 @@ export async function initDb() {
     CREATE INDEX IF NOT EXISTS idx_ledger_document ON ledger_entries(document_id);
     CREATE INDEX IF NOT EXISTS idx_ledger_this_hash ON ledger_entries(this_entry_hash);
     CREATE INDEX IF NOT EXISTS idx_extracted_document ON extracted_fields(document_id);
+    CREATE INDEX IF NOT EXISTS idx_document_contents_document ON document_contents(document_id);
     CREATE INDEX IF NOT EXISTS idx_shares_token ON document_shares(share_token);
     CREATE INDEX IF NOT EXISTS idx_chunks_doc_case ON document_chunks(case_id, document_id);
     `;

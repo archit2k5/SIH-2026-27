@@ -1,5 +1,3 @@
-import fs from "fs";
-import path from "path";
 import { DocumentModel } from "../models/document.model.js";
 import { DocumentVersionModel } from "../models/document-version.model.js";
 import { ExtractedFieldModel } from "../models/extracted-field.model.js";
@@ -96,6 +94,7 @@ export class DocumentController {
             documentId: document.id,
             buffer: file.buffer,
             filename: file.originalname,
+            storagePath,
             initialText: initialText || "",
         });
 
@@ -215,24 +214,34 @@ export class DocumentController {
             }
         }
 
-        const absolutePath = path.resolve(targetStoragePath);
-        if (!fs.existsSync(absolutePath)) {
-            throw new ApiError(404, "Physical document file not found on disk.");
+        let fileBuffer;
+
+        try {
+            fileBuffer = await StorageService.getFileBuffer(targetStoragePath);
+        } catch (error) {
+            Logger.error(
+                `Failed to retrieve document ${document.id} from MinIO: ${error.message}`
+            );
+
+            throw new ApiError(
+                404,
+                "Physical document file not found in storage."
+            );
         }
 
-        // Log VIEW action to ledger (FR13)
-        await LedgerModel.appendEntry({
-            documentId: document.id,
-            action: LEDGER_ACTION.VIEW,
-            actorId: req.user.id,
-            documentHash: document.original_hash,
-            metadata: {
-                clientIp: req.ip,
-                userAgent: req.headers["user-agent"],
-            },
-        });
+        res.setHeader(
+            "Content-Disposition",
+            `attachment; filename="${encodeURIComponent(document.title)}"`
+        );
 
-        res.download(absolutePath, document.title);
+        res.setHeader(
+            "Content-Type",
+            document.mime_type || "application/octet-stream"
+        );
+
+        res.setHeader("Content-Length", fileBuffer.length);
+
+        return res.send(fileBuffer);
     });
 
     /**
@@ -273,70 +282,53 @@ export class DocumentController {
      */
     static verifyDocument = asyncHandler(async (req, res) => {
         const document = req.document;
-        const { confirmedFields, signaturePrivateKey } = req.body;
+        const userId = req.user.id;
 
-        // 1. Verify/update fields with officer ID
-        const verifiedFields = await ExtractedFieldModel.verifyFields(
-            document.id,
-            req.user.id,
-            confirmedFields || []
-        );
+        // 1. Verify the document
+        const verifiedDocument =
+            await DocumentModel.setVerifiedStatus(
+                document.id,
+                true
+            );
 
-        // 2. Mark document as verified
-        await DocumentModel.setVerifiedStatus(document.id, true);
-
-        // 3. Digital signature generation (FR6)
-        // If officer supplies their private key, create a verifiable Ed25519 signature.
-        // Otherwise use the deterministic actor-token reference (verified by chain-integrity
-        // via the startsWith("SIGNED_") guard) — avoids storing an ephemeral public key.
-        let digitalSignature = "SIGNED_OFFICER_" + req.user.id;
-        try {
-            if (signaturePrivateKey) {
-                digitalSignature = signData(document.original_hash, signaturePrivateKey);
-            }
-            // No else: keep the pre-set SIGNED_OFFICER_ token — ephemeral keypair
-            // signatures cannot be verified because the throwaway public key is never stored.
-        } catch (sigErr) {
-            Logger.warn("Signature signing error, using actor token signature", { error: sigErr.message });
+        if (!verifiedDocument) {
+            throw new ApiError(
+                404,
+                "Document not found."
+            );
         }
 
-        // 4. Append VERIFY action to ledger with digital signature
-        const ledgerEntry = await LedgerModel.appendEntry({
+        // 2. Mark extracted NER fields as verified
+        await ExtractedFieldModel.verifyFields(
+            document.id,
+            userId
+        );
+
+        // 3. Index the actual extracted document text for RAG
+        const chunks = await PipelineService.indexForRAG(
+            document.id
+        );
+
+        // 4. Record verification in the tamper-evident ledger
+        await LedgerModel.appendEntry({
             documentId: document.id,
-            action: LEDGER_ACTION.VERIFY,
-            actorId: req.user.id,
+            action: "VERIFY",
+            actorId: userId,
             documentHash: document.original_hash,
-            signature: digitalSignature,
             metadata: {
-                verifiedFieldsCount: verifiedFields.length,
-                verifiedByOfficer: req.user.name,
-                officerRole: req.user.role,
+                chunksIndexed: chunks.length,
+                verificationType: "human",
             },
         });
 
-        // 5. Index for RAG now that human verification is complete (FR5)
-        const sampleText = verifiedFields.map(f => `${f.field_name}: ${f.field_value}`).join(". ");
-        await PipelineService.indexForRAG({
-            documentId: document.id,
-            caseId: document.case_id,
-            documentTitle: document.title,
-            content: sampleText || `Verified legal document: ${document.title}`,
-            verifiedFields,
+        return res.status(200).json({
+            success: true,
+            message: "Document verified and indexed successfully.",
+            data: {
+                document: verifiedDocument,
+                chunksIndexed: chunks.length,
+            },
         });
-
-        return res.status(200).json(
-            new ApiResponse(
-                200,
-                {
-                    documentId: document.id,
-                    verified: true,
-                    digitalSignature,
-                    ledgerEntry,
-                    verifiedFields,
-                },
-                "Document verified and digitally signed. Now unlocked for AI search & RAG retrieval."
-            )
-        );
     });
 
     /**

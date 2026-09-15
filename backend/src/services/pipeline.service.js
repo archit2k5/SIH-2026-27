@@ -1,9 +1,11 @@
+import axios from axios
 import { sha256 } from "../utils/crypto.js";
 import { DocumentModel } from "../models/document.model.js";
 import { ExtractedFieldModel } from "../models/extracted-field.model.js";
 import { query } from "../config/db.js";
 import { Logger } from "../utils/logger.js";
 import { DOC_TYPE } from "../utils/constants.js";
+import { DocumentContentModel } from "../models/document-content.model.js";
 
 /**
  * Intelligent Document Processing Pipeline
@@ -13,6 +15,16 @@ import { DOC_TYPE } from "../utils/constants.js";
  * 3. Schema-constrained NER extraction (case #, names, dates, IPC/BNS sections) (FR3)
  * 4. Post-verification RAG chunking and vector indexing (FR5, FR20)
  */
+const AI_NLP_SERVICE_URL = process.env.AI_NLP_SERVICE_URL || "http://localhost:8000";
+
+const extractPdfText = async (objectKey) => {
+    const response = await axios.post(
+        `${AI_NLP_SERVICE_URL}/internal/extract/pdf/${encodeURIComponent(objectKey)}`
+    );
+
+    return response.data;
+};
+
 export class PipelineService {
     /**
      * Check if a document with this identical hash already exists across the system (FR4)
@@ -179,42 +191,81 @@ export class PipelineService {
         return entities;
     }
 
+
+
     /**
      * Executes the initial ingestion pipeline: duplicate check, translation, NER extraction
      * @param {Object} params
      * @param {string} params.documentId
      * @param {Buffer} params.buffer
      * @param {string} params.filename
+     * @param {string} params.storagePath
      * @param {string} [params.initialText]
      * @returns {Promise<{ entities: Array, language: string, translatedText: string }>}
      */
-    static async processIngestion({ documentId, buffer, filename, initialText = "" }) {
-        // Attempt UTF-8 decode for text files or extracted OCR mock text
+    static async processIngestion({ documentId, buffer, filename, storagePath, initialText = "", }) {
         let rawContent = initialText;
-        if (!rawContent) {
-            try {
-                const sample = buffer.toString("utf8", 0, Math.min(buffer.length, 2048));
-                if (/[\x20-\x7E\s]/.test(sample)) {
-                    rawContent = sample;
-                }
-            } catch {
-                rawContent = `Document: ${filename}`;
-            }
+
+        let extractionMethod = "provided_text";
+        let pageCount = null;
+
+        // Extract the PDF from MinIO using the Python AI/NLP service
+        if (!rawContent && storagePath) {
+            const extractionResult = await this.extractPdfText(storagePath);
+
+            rawContent = extractionResult.text || "";
+            extractionMethod = extractionResult.method || "unknown";
+            pageCount = extractionResult.page_count || null;
+
+            Logger.info(
+                `PDF extraction completed for document ${documentId} ` +
+                `using ${extractionMethod}`
+            );
         }
 
-        // 1. Multilingual translation check
-        const { detectedLanguage, translatedText } = await this.translateDocument(rawContent);
+        // Fallback if no content was extracted
+        if (!rawContent) {
+            rawContent = `Document: ${filename}`;
+            extractionMethod = "fallback";
+        }
 
-        // 2. NER extraction
-        const entities = this.extractEntities(rawContent + " " + translatedText, filename);
+        // Store the complete extracted text
+        await DocumentContentModel.createOrUpdate({
+            documentId,
+            extractedText: rawContent,
+            extractionMethod,
+            pageCount,
+        });
 
-        // 3. Save extracted fields in database
-        await ExtractedFieldModel.saveFields(documentId, entities);
+        Logger.info(
+            `Extracted content stored for document ${documentId}`
+        );
+
+        // Existing translation logic
+        const {
+            detectedLanguage,
+            translatedText,
+        } = await this.translateDocument(rawContent);
+
+        // Existing NER logic
+        const entities = this.extractEntities(
+            rawContent + " " + translatedText,
+            filename
+        );
+
+        // Store structured extracted fields
+        await ExtractedFieldModel.saveFields(
+            documentId,
+            entities
+        );
 
         return {
             entities,
             language: detectedLanguage,
             translatedText,
+            extractedText: rawContent,
+            extractionMethod,
+            pageCount,
         };
     }
 
@@ -224,57 +275,98 @@ export class PipelineService {
      * 
      * @param {Object} params
      * @param {string} params.documentId
-     * @param {string} params.caseId
-     * @param {string} params.documentTitle
-     * @param {string} params.content
-     * @param {Array<Object>} params.verifiedFields
      */
-    static async indexForRAG({ documentId, caseId, documentTitle, content, verifiedFields = [] }) {
-        Logger.info(`Indexing verified document ${documentId} for Case ${caseId} into RAG index...`);
+    static async indexForRAG(documentId) {
+        const document = await DocumentModel.findById(documentId);
 
-        // Prepare chunk blocks with citation metadata
-        const metadataString = verifiedFields.map(f => `${f.field_name || f.fieldName}: ${f.field_value || f.fieldValue}`).join(" | ");
-        const textToChunk = `Document Title: ${documentTitle}\nVerified Metadata: ${metadataString}\n\nContent:\n${content}`;
-
-        // Simple sentence / paragraph chunking (~500 chars per chunk with overlap)
-        const chunkSize = 500;
-        const overlap = 80;
-        const chunks = [];
-
-        let startIndex = 0;
-        let chunkIndex = 0;
-
-        while (startIndex < textToChunk.length) {
-            const chunkText = textToChunk.slice(startIndex, startIndex + chunkSize).trim();
-            if (chunkText.length > 20) {
-                chunks.push({
-                    chunkIndex,
-                    chunkText,
-                    metadata: {
-                        documentId,
-                        caseId,
-                        title: documentTitle,
-                        verifiedAt: new Date().toISOString(),
-                    },
-                });
-                chunkIndex++;
-            }
-            startIndex += (chunkSize - overlap);
+        if (!document) {
+            throw new Error("Document not found");
         }
 
-        // Delete any existing chunks for this document before re-indexing
-        await query("DELETE FROM document_chunks WHERE document_id = $1", [documentId]);
-
-        // Insert chunks into database
-        for (const ch of chunks) {
-            await query(
-                `INSERT INTO document_chunks (document_id, case_id, chunk_index, chunk_text, metadata)
-                 VALUES ($1, $2, $3, $4, $5)`,
-                [documentId, caseId, ch.chunkIndex, ch.chunkText, JSON.stringify(ch.metadata)]
+        if (!document.verified) {
+            throw new Error(
+                "Document must be human-verified before RAG indexing"
             );
         }
 
-        Logger.info(`Indexed ${chunks.length} chunks for document ${documentId} into RAG datastore.`);
-        return chunks.length;
+        const content = await DocumentContentModel.getByDocumentId(
+            documentId
+        );
+
+        if (!content || !content.extracted_text?.trim()) {
+            throw new Error(
+                "No extracted text available for RAG indexing"
+            );
+        }
+
+        const chunkSize = 1000;
+        const chunkOverlap = 200;
+
+        const text = content.extracted_text.trim();
+
+        // Remove existing chunks so re-verification/re-indexing
+        // doesn't create duplicates.
+        await query(
+            `
+        DELETE FROM document_chunks
+        WHERE document_id = $1
+        `,
+            [documentId]
+        );
+
+        const chunks = [];
+
+        let start = 0;
+        let chunkIndex = 0;
+
+        while (start < text.length) {
+            const end = Math.min(start + chunkSize, text.length);
+
+            const chunkText = text.slice(start, end).trim();
+
+            if (chunkText) {
+                const result = await query(
+                    `
+                INSERT INTO document_chunks (
+                    document_id,
+                    case_id,
+                    chunk_index,
+                    chunk_text,
+                    metadata
+                )
+                VALUES ($1, $2, $3, $4, $5)
+                RETURNING *
+                `,
+                    [
+                        documentId,
+                        document.case_id,
+                        chunkIndex,
+                        chunkText,
+                        JSON.stringify({
+                            source: "document_content",
+                            extraction_method:
+                                content.extraction_method,
+                            page_count: content.page_count,
+                        }),
+                    ]
+                );
+
+                chunks.push(result.rows[0]);
+                chunkIndex++;
+            }
+
+            if (end >= text.length) {
+                break;
+            }
+
+            start = end - chunkOverlap;
+        }
+
+        Logger.info(
+            `RAG indexing completed for document ${documentId}: ` +
+            `${chunks.length} chunks created`
+        );
+
+        return chunks;
     }
 }
