@@ -1,4 +1,4 @@
-import axios from axios
+import axios from "axios"
 import { sha256 } from "../utils/crypto.js";
 import { DocumentModel } from "../models/document.model.js";
 import { ExtractedFieldModel } from "../models/extracted-field.model.js";

@@ -371,6 +371,53 @@ export class DocumentController {
     });
 
     /**
+     * Create a time-limited watermarked share link (FR24)
+     * POST /api/v1/documents/:document_id/share
+     */
+    static createShareLink = asyncHandler(async (req, res) => {
+        const { document_id: documentId } = req.params;
+        const { expiresInHours = 24, watermarkText } = req.body;
+
+        const document = await DocumentModel.findById(documentId);
+        if (!document) {
+            throw new ApiError(404, "Document not found.");
+        }
+
+        const shareToken = generateSecureToken();
+        const expiresAt = new Date(Date.now() + Number(expiresInHours) * 60 * 60 * 1000);
+
+        const share = await DocumentShareModel.create({
+            documentId,
+            shareToken,
+            expiresAt,
+            createdBy: req.user.id,
+            watermarkText: watermarkText || `Shared by ${req.user.name} — CONFIDENTIAL`,
+        });
+
+        await LedgerModel.appendEntry({
+            documentId,
+            action: LEDGER_ACTION.SHARE,
+            actorId: req.user.id,
+            documentHash: document.original_hash,
+            metadata: {
+                expiresAt: share.expires_at,
+            },
+        });
+
+        return res.status(201).json(
+            new ApiResponse(
+                201,
+                {
+                    shareToken: share.share_token,
+                    expiresAt: share.expires_at,
+                    shareUrl: `/documents/shared/${share.share_token}`,
+                },
+                "Time-limited share link created."
+            )
+        );
+    });
+
+    /**
      * View shared document via token (External / Defense Counsel)
      * GET /api/v1/documents/shared/:share_token
      */

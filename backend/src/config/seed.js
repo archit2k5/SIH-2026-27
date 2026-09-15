@@ -3,6 +3,7 @@ import { UserModel } from "../models/user.model.js";
 import { CaseModel } from "../models/case.model.js";
 import { CaseAccessModel } from "../models/case-access.model.js";
 import { DocumentModel } from "../models/document.model.js";
+import { DocumentContentModel } from "../models/document-content.model.js";
 import { DocumentVersionModel } from "../models/document-version.model.js";
 import { ExtractedFieldModel } from "../models/extracted-field.model.js";
 import { LedgerModel } from "../models/ledger.model.js";
@@ -203,14 +204,15 @@ On 14/01/2026, the accused allegedly logged into the core payment database using
             metadata: { verifiedBy: ioUser.name, role: ioUser.role },
         });
 
-        // Index for RAG
-        await PipelineService.indexForRAG({
+        // Store extracted content so it can be chunked/embedded below
+        await DocumentContentModel.createOrUpdate({
             documentId: sampleDoc.id,
-            caseId: sampleCase.id,
-            documentTitle: sampleDoc.title,
-            content: sampleDocText,
-            verifiedFields: nerFields,
+            extractedText: sampleDocText,
+            extractionMethod: "seed_fixture",
         });
+
+        // Index for RAG
+        await PipelineService.indexForRAG(sampleDoc.id);
 
         Logger.info("Seeded sample document, ledger entries, and RAG index.");
     }

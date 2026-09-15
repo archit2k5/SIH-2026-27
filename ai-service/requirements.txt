@@ -7,3 +7,4 @@ pdf2image
 boto3
 python-dotenv
 sentence-transformers
+spacy

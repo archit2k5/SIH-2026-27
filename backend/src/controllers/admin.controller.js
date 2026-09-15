@@ -104,12 +104,26 @@ export class AdminController {
         }
 
         // 2. Storage status
-        const uploadDir = StorageService.ensureUploadDir();
-        const storageStatus = {
-            type: ENV.STORAGE_TYPE,
-            uploadDir,
-            healthy: true,
-        };
+        let storageStatus;
+
+        try {
+            await StorageService.testConnection();
+
+            storageStatus = {
+                type: ENV.STORAGE_TYPE,
+                endpoint: `${ENV.MINIO_ENDPOINT}:${ENV.MINIO_PORT}`,
+                bucket: ENV.MINIO_BUCKET,
+                healthy: true,
+            };
+        } catch (error) {
+            storageStatus = {
+                type: ENV.STORAGE_TYPE,
+                endpoint: `${ENV.MINIO_ENDPOINT}:${ENV.MINIO_PORT}`,
+                bucket: ENV.MINIO_BUCKET,
+                healthy: false,
+                error: error.message,
+            };
+        }
 
         // 3. Cryptographic Ledger verification
         const ledgerCheck = await LedgerModel.verifyLedgerIntegrity();

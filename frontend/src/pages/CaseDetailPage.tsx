@@ -25,6 +25,7 @@ import { TimelinePanel } from "../components/cases/TimelinePanel";
 import { MembersPanel } from "../components/cases/MembersPanel";
 import { AuditReportPanel } from "../components/cases/AuditReportPanel";
 import { caseStatusLabel, docTypeLabel } from "../lib/utils";
+import { VerifyDocumentModal } from "../components/documents/VerifyDocumentModal";
 
 type CenterTab = "documents" | "ai" | "timeline" | "members" | "audit";
 
@@ -46,6 +47,7 @@ export function CaseDetailPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [showUpload, setShowUpload] = useState(false);
+  const [pendingVerifyDoc, setPendingVerifyDoc] = useState<{ doc: DocumentT; fields: ExtractedField[] } | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
 
   useEffect(() => {
@@ -113,11 +115,10 @@ export function CaseDetailPage() {
             <button
               key={t.id}
               onClick={() => setTab(t.id)}
-              className={`flex items-center gap-2 rounded-sm px-2.5 py-2 text-[13px] font-medium transition-colors ${
-                tab === t.id
-                  ? "bg-primary/10 text-primary"
-                  : "text-text-secondary hover:bg-black/5 hover:text-text-primary"
-              }`}
+              className={`flex items-center gap-2 rounded-sm px-2.5 py-2 text-[13px] font-medium transition-colors ${tab === t.id
+                ? "bg-primary/10 text-primary"
+                : "text-text-secondary hover:bg-black/5 hover:text-text-primary"
+                }`}
             >
               {t.icon}
               {t.label}
@@ -210,9 +211,25 @@ export function CaseDetailPage() {
         <UploadDocumentModal
           caseId={caseId}
           onClose={() => setShowUpload(false)}
-          onUploaded={(doc: DocumentT, _fields: ExtractedField[]) => {
+          onUploaded={(doc: DocumentT, fields: ExtractedField[]) => {
             setDocuments((prev) => [doc, ...prev]);
             setSelectedDoc(doc);
+            setPendingVerifyDoc({ doc, fields });
+          }}
+        />
+      )}
+
+      {pendingVerifyDoc && (
+        <VerifyDocumentModal
+          documentId={pendingVerifyDoc.doc.id}
+          initialFields={pendingVerifyDoc.fields}
+          onClose={() => setPendingVerifyDoc(null)}
+          onVerified={(_sig, verifiedFields) => {
+            setDocuments((prev) =>
+              prev.map((d) => (d.id === pendingVerifyDoc.doc.id ? { ...d, verified: true } : d))
+            );
+            setSelectedDoc((prev) => (prev?.id === pendingVerifyDoc.doc.id ? { ...prev, verified: true } : prev));
+            setPendingVerifyDoc(null);
           }}
         />
       )}
