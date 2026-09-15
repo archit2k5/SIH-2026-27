@@ -4,6 +4,8 @@ import { CaseAccessModel } from "../models/case-access.model.js";
 import { AccessControl } from "../utils/access-control.js";
 import { AI_CONSTANTS, ROLES } from "../utils/constants.js";
 import { Logger } from "../utils/logger.js";
+import { PipelineService } from "./pipeline.service.js";
+import { LLMService } from "./llm.service.js";
 
 /**
  * Access-Filtered RAG & AI Assistance Service
@@ -21,86 +23,27 @@ export class AIService {
      * Retrieve relevant verified document chunks strictly filtered by user's case clearance
      * @param {Object} params
      * @param {string} params.userId
-     * @param {string} params.userRole
      * @param {string} [params.caseId]
      * @param {string} params.queryText
      * @param {number} [params.limit=5]
      */
-    static async retrieveFilteredChunks({ userId, userRole, caseId = null, queryText, limit = 5 }) {
-        let accessibleCaseIds = [];
-
-        if (AccessControl.isAdminOrRegistrar(userRole)) {
-            // Admins have system-wide oversight
-            if (caseId) {
-                accessibleCaseIds = [caseId];
-            } else {
-                const allCasesRes = await query("SELECT id FROM cases");
-                accessibleCaseIds = allCasesRes.rows.map(r => r.id);
-            }
-        } else {
-            // Non-admin: query case_access + cases created by user
-            let sql = `
-                SELECT DISTINCT c.id
-                FROM cases c
-                LEFT JOIN case_access ca ON c.id = ca.case_id AND ca.user_id = $1
-                WHERE (c.created_by = $1 OR (ca.user_id = $1 AND (ca.expires_at IS NULL OR ca.expires_at > NOW())))
-            `;
-            const params = [userId];
-
-            if (caseId) {
-                sql += ` AND c.id = $2`;
-                params.push(caseId);
-            }
-
-            const res = await query(sql, params);
-            accessibleCaseIds = res.rows.map(r => r.id);
+    static async retrieveFilteredChunks({ queryText, userId, caseId = null, limit = 5, }) {
+        if (!queryText || !queryText.trim()) {
+            throw new Error("Query text is required");
         }
 
-        if (accessibleCaseIds.length === 0) {
-            return [];
+        if (!userId) {
+            throw new Error("User ID is required");
         }
 
-        // Query document_chunks joining documents to ensure document is verified (FR5)
-        // Token search scoring based on query terms matching chunk_text
-        const searchTokens = queryText
-            .toLowerCase()
-            .replace(/[^a-z0-9\s]/g, " ")
-            .split(/\s+/)
-            .filter(t => t.length > 2);
-
-        const chunksSql = `
-            SELECT dc.*, d.title as document_title, d.doc_type, d.verified, c.case_number
-            FROM document_chunks dc
-            JOIN documents d ON dc.document_id = d.id
-            JOIN cases c ON dc.case_id = c.id
-            WHERE dc.case_id = ANY($1)
-              AND d.verified = TRUE
-            ORDER BY dc.created_at DESC
-            LIMIT 50
-        `;
-
-        const allCandidateChunks = await query(chunksSql, [accessibleCaseIds]);
-        if (allCandidateChunks.rows.length === 0) {
-            return [];
-        }
-
-        // Score chunks by token match density
-        const scoredChunks = allCandidateChunks.rows.map(chunk => {
-            const chunkLower = chunk.chunk_text.toLowerCase();
-            let score = 0;
-            for (const token of searchTokens) {
-                if (chunkLower.includes(token)) {
-                    score += 1;
-                }
-            }
-            return { ...chunk, score };
+        const chunks = await PipelineService.searchSimilarChunks({
+            queryText,
+            userId,
+            caseId,
+            limit,
         });
 
-        // Filter chunks having at least 1 keyword match, or top chunks if general query
-        scoredChunks.sort((a, b) => b.score - a.score);
-        const topChunks = scoredChunks.filter(c => c.score > 0).slice(0, limit);
-
-        return topChunks;
+        return chunks;
     }
 
     /**
@@ -111,75 +54,64 @@ export class AIService {
      * @param {string} [params.caseId]
      * @param {string} params.queryText
      */
-    static async queryAssistant({ userId, userRole, caseId = null, queryText }) {
-        Logger.info(`AI Query received from user ${userId} (Role: ${userRole}): "${queryText}"`);
+    static async queryAssistant({ queryText, userId, caseId = null, limit = 5, }) {
+        if (!queryText || !queryText.trim()) {
+            throw new Error("Query text is required");
+        }
 
-        // 1. Access-filtered chunk retrieval
+        if (!userId) {
+            throw new Error("User ID is required");
+        }
+
         const chunks = await this.retrieveFilteredChunks({
-            userId,
-            userRole,
-            caseId,
             queryText,
-            limit: 4,
+            userId,
+            caseId,
+            limit,
         });
 
-        const chunkIds = chunks.map(c => c.id);
+        // No authorized, verified evidence
+        if (!chunks.length) {
+            const answer = "No supporting document found.";
 
-        // 2. FR17: If no relevant verified document is found, return strict fallback
-        if (chunks.length === 0) {
-            const responseText = `${AI_CONSTANTS.NO_DOC_FOUND} Ensure the document has been uploaded and verified by an authorized officer.`;
-            
             await AIQueryLogModel.logQuery({
                 userId,
                 caseId,
                 queryText,
                 retrievedChunkIds: [],
-                responseText,
+                responseText: answer,
                 citations: [],
             });
 
             return {
-                disclaimer: AI_CONSTANTS.DISCLAIMER,
-                answer: responseText,
+                answer,
                 citations: [],
-                hasSupportingEvidence: false,
+                sources: [],
             };
         }
 
-        // 3. Build citations list
-        const citations = chunks.map(ch => ({
-            chunkId: ch.id,
-            documentId: ch.document_id,
-            documentTitle: ch.document_title,
-            docType: ch.doc_type,
-            caseNumber: ch.case_number,
-            excerpt: ch.chunk_text.slice(0, 160) + "...",
-        }));
+        // Only authorized + verified chunks reach the LLM
+        const result = await LLMService.generateGroundedAnswer({
+            queryText,
+            chunks,
+        });
 
-        // 4. Generate synthesis from verified excerpts
-        const contextExcerpts = chunks.map(
-            (c, i) => `[Source ${i + 1}: ${c.document_title} (Doc ID: ${c.document_id})]\n${c.chunk_text}`
-        ).join("\n\n");
-
-        const answer = `Based on verified case records:\n\n${chunks[0].chunk_text.slice(0, 300)}...\n\nSource Citations:\n` +
-            citations.map((c, i) => `• [${i + 1}] ${c.documentTitle} (${c.docType}) — Case: ${c.caseNumber}`).join("\n");
-
-        // 5. Log query execution for compliance (FR21)
+        // Audit the complete AI interaction
         await AIQueryLogModel.logQuery({
             userId,
-            caseId: caseId || chunks[0].case_id,
+            caseId,
             queryText,
-            retrievedChunkIds: chunkIds,
-            responseText: answer,
-            citations,
+            retrievedChunkIds: chunks.map(
+                (chunk) => chunk.id
+            ),
+            responseText: result.answer,
+            citations: result.citations,
         });
 
         return {
-            disclaimer: AI_CONSTANTS.DISCLAIMER,
-            answer,
-            citations,
-            hasSupportingEvidence: true,
-            retrievedChunksCount: chunks.length,
+            answer: result.answer,
+            citations: result.citations,
+            sources: chunks,
         };
     }
 

@@ -372,6 +372,17 @@ export async function initDb() {
         created_at TIMESTAMPTZ DEFAULT NOW()
     );
 
+    CREATE TABLE IF NOT EXISTS document_contents (
+            id TEXT PRIMARY KEY DEFAULT uuid_generate_v4(),
+            document_id TEXT NOT NULL,
+            extracted_text TEXT NOT NULL DEFAULT '',
+            extraction_method TEXT,
+            page_count INT,
+            created_at TIMESTAMPTZ DEFAULT NOW(),
+            updated_at TIMESTAMPTZ DEFAULT NOW(),
+        CONSTRAINT unique_document_content UNIQUE (document_id)
+    );
+
     CREATE TABLE IF NOT EXISTS ledger_entries (
         id BIGSERIAL PRIMARY KEY,
         document_id UUID REFERENCES documents(id) ON DELETE SET NULL,
@@ -435,8 +446,12 @@ export async function initDb() {
         case_id UUID NOT NULL REFERENCES cases(id) ON DELETE CASCADE,
         chunk_index INT NOT NULL,
         chunk_text TEXT NOT NULL,
+        embedding vector(384),
         metadata JSONB DEFAULT '{}'::jsonb,
-        created_at TIMESTAMPTZ DEFAULT NOW()
+        created_at TIMESTAMPTZ DEFAULT NOW(),
+
+        CONSTRAINT unique_document_chunk
+        UNIQUE (document_id, chunk_index)
     );
 
     CREATE INDEX IF NOT EXISTS idx_users_email ON users(email);

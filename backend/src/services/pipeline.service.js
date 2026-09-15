@@ -6,6 +6,7 @@ import { query } from "../config/db.js";
 import { Logger } from "../utils/logger.js";
 import { DOC_TYPE } from "../utils/constants.js";
 import { DocumentContentModel } from "../models/document-content.model.js";
+import { EmbeddingService } from "./embedding.service.js";
 
 /**
  * Intelligent Document Processing Pipeline
@@ -39,6 +40,70 @@ export class PipelineService {
             existingDocument: existing,
             hash,
         };
+    }
+
+    static async searchSimilarChunks({ queryText, userId, caseId, limit = 5 }) {
+        if (!queryText || !queryText.trim()) {
+            throw new Error("Query text is required");
+        }
+
+        if (!userId) {
+            throw new Error("User ID is required");
+        }
+
+        // Generate embedding for the user's question
+        const queryEmbedding =
+            await EmbeddingService.generateEmbedding(queryText);
+
+        const vector = `[${queryEmbedding.join(",")}]`;
+
+        const sql = `
+        SELECT
+            dc.id,
+            dc.document_id,
+            dc.case_id,
+            dc.chunk_index,
+            dc.chunk_text,
+            dc.metadata,
+            dc.created_at,
+
+            d.title AS document_title,
+            d.doc_type,
+            d.original_hash,
+
+            1 - (dc.embedding <=> $1::vector) AS similarity
+
+        FROM document_chunks dc
+
+        INNER JOIN documents d
+            ON d.id = dc.document_id
+
+        INNER JOIN case_access ca
+            ON ca.case_id = dc.case_id
+
+        WHERE
+            ca.user_id = $2
+            AND ca.access_level IN ('read', 'write', 'approve')
+            AND (ca.expires_at IS NULL OR ca.expires_at > NOW())
+
+            AND d.verified = TRUE
+            AND dc.embedding IS NOT NULL
+
+            AND ($3::uuid IS NULL OR dc.case_id = $3::uuid)
+
+        ORDER BY dc.embedding <=> $1::vector
+
+        LIMIT $4
+    `;
+
+        const result = await query(sql, [
+            vector,
+            userId,
+            caseId || null,
+            limit,
+        ]);
+
+        return result.rows;
     }
 
     /**
@@ -283,15 +348,16 @@ export class PipelineService {
             throw new Error("Document not found");
         }
 
+        // RAG indexing is allowed only after human verification
         if (!document.verified) {
             throw new Error(
                 "Document must be human-verified before RAG indexing"
             );
         }
 
-        const content = await DocumentContentModel.getByDocumentId(
-            documentId
-        );
+        // Get the complete extracted/OCR text
+        const content =
+            await DocumentContentModel.getByDocumentId(documentId);
 
         if (!content || !content.extracted_text?.trim()) {
             throw new Error(
@@ -299,13 +365,15 @@ export class PipelineService {
             );
         }
 
+        const text = content.extracted_text.trim();
+
+        // Chunk configuration
         const chunkSize = 1000;
         const chunkOverlap = 200;
 
-        const text = content.extracted_text.trim();
-
-        // Remove existing chunks so re-verification/re-indexing
-        // doesn't create duplicates.
+        // Remove existing chunks before re-indexing.
+        // This prevents duplicate chunks if a verified document
+        // is indexed again.
         await query(
             `
         DELETE FROM document_chunks
@@ -320,11 +388,24 @@ export class PipelineService {
         let chunkIndex = 0;
 
         while (start < text.length) {
-            const end = Math.min(start + chunkSize, text.length);
+            const end = Math.min(
+                start + chunkSize,
+                text.length
+            );
 
-            const chunkText = text.slice(start, end).trim();
+            const chunkText = text
+                .slice(start, end)
+                .trim();
 
             if (chunkText) {
+                // Generate embedding using the local
+                // Python AI/NLP service
+                const embedding =
+                    await EmbeddingService.generateEmbedding(
+                        chunkText
+                    );
+
+                // Store vector in PostgreSQL / pgvector
                 const result = await query(
                     `
                 INSERT INTO document_chunks (
@@ -332,9 +413,17 @@ export class PipelineService {
                     case_id,
                     chunk_index,
                     chunk_text,
+                    embedding,
                     metadata
                 )
-                VALUES ($1, $2, $3, $4, $5)
+                VALUES (
+                    $1,
+                    $2,
+                    $3,
+                    $4,
+                    $5::vector,
+                    $6
+                )
                 RETURNING *
                 `,
                     [
@@ -342,23 +431,28 @@ export class PipelineService {
                         document.case_id,
                         chunkIndex,
                         chunkText,
+                        `[${embedding.join(",")}]`,
                         JSON.stringify({
                             source: "document_content",
                             extraction_method:
                                 content.extraction_method,
-                            page_count: content.page_count,
+                            page_count:
+                                content.page_count,
                         }),
                     ]
                 );
 
                 chunks.push(result.rows[0]);
+
                 chunkIndex++;
             }
 
+            // Stop once we've reached the end
             if (end >= text.length) {
                 break;
             }
 
+            // Move forward while retaining overlap
             start = end - chunkOverlap;
         }
 

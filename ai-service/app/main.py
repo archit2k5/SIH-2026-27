@@ -4,6 +4,7 @@ import tempfile
 
 from app.storage.miniio_client import download_file
 from app.extraction.pdf_extractor import extract_text_from_pdf
+from app.embeddings.embedding_service import generate_embedding
 
 
 app = FastAPI(
@@ -45,3 +46,16 @@ def extract_pdf_from_minio(object_key: str):
 
     finally:
         Path(temp_path).unlink(missing_ok=True)
+
+@app.post("/internal/embeddings")
+def create_embedding(payload: dict):
+
+    text = payload.get("text", "")
+
+    embedding = generate_embedding(text)
+
+    return {
+        "success": True,
+        "dimensions": len(embedding),
+        "embedding": embedding
+    }

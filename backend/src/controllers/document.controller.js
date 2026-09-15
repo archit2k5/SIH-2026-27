@@ -16,6 +16,7 @@ import { generateSecureToken } from "../utils/token.js";
 import { signData, generateKeyPair } from "../utils/crypto.js";
 import { DOC_TYPE, LEDGER_ACTION, SENSITIVITY_LEVEL } from "../utils/constants.js";
 import { Logger } from "../utils/logger.js";
+import { query } from "../config/db.js";
 
 export class DocumentController {
     /**
@@ -284,95 +285,89 @@ export class DocumentController {
         const document = req.document;
         const userId = req.user.id;
 
-        // 1. Verify the document
-        const verifiedDocument =
-            await DocumentModel.setVerifiedStatus(
-                document.id,
-                true
-            );
-
-        if (!verifiedDocument) {
+        if (document.verified) {
             throw new ApiError(
-                404,
-                "Document not found."
+                400,
+                "Document is already verified."
             );
         }
 
-        // 2. Mark extracted NER fields as verified
-        await ExtractedFieldModel.verifyFields(
-            document.id,
-            userId
-        );
+        try {
+            // 1. Verify extracted NER fields
+            await ExtractedFieldModel.verifyFields(
+                document.id,
+                userId
+            );
 
-        // 3. Index the actual extracted document text for RAG
-        const chunks = await PipelineService.indexForRAG(
-            document.id
-        );
+            // 2. Temporarily mark document as verified
+            // indexForRAG() requires the document to be verified.
+            const verifiedDocument =
+                await DocumentModel.setVerifiedStatus(
+                    document.id,
+                    true
+                );
 
-        // 4. Record verification in the tamper-evident ledger
-        await LedgerModel.appendEntry({
-            documentId: document.id,
-            action: "VERIFY",
-            actorId: userId,
-            documentHash: document.original_hash,
-            metadata: {
-                chunksIndexed: chunks.length,
-                verificationType: "human",
-            },
-        });
+            if (!verifiedDocument) {
+                throw new ApiError(
+                    404,
+                    "Document not found."
+                );
+            }
 
-        return res.status(200).json({
-            success: true,
-            message: "Document verified and indexed successfully.",
-            data: {
-                document: verifiedDocument,
-                chunksIndexed: chunks.length,
-            },
-        });
-    });
+            // 3. Index the actual extracted document content
+            const chunks =
+                await PipelineService.indexForRAG(
+                    document.id
+                );
 
-    /**
-     * Create a time-limited watermarked share link (FR24)
-     * POST /api/v1/documents/:document_id/share
-     */
-    static createShareLink = asyncHandler(async (req, res) => {
-        const document = req.document;
-        const { durationHours = 24, watermarkText } = req.body;
-
-        const shareToken = generateSecureToken(32);
-        const expiresAt = new Date(Date.now() + durationHours * 3600 * 1000);
-
-        const shareRecord = await DocumentShareModel.create({
-            documentId: document.id,
-            shareToken,
-            expiresAt,
-            createdBy: req.user.id,
-            watermarkText: watermarkText || `RESTRICTED — VIEWED BY EXTERNAL COUNSEL — ${new Date().toISOString().split("T")[0]}`,
-        });
-
-        // Log SHARE action in ledger
-        await LedgerModel.appendEntry({
-            documentId: document.id,
-            action: LEDGER_ACTION.SHARE,
-            actorId: req.user.id,
-            documentHash: document.original_hash,
-            metadata: {
-                shareToken: shareToken.slice(0, 8) + "...",
-                expiresAt,
-            },
-        });
-
-        return res.status(201).json(
-            new ApiResponse(
-                201,
-                {
-                    shareRecord,
-                    shareUrl: `/api/v1/documents/shared/${shareToken}`,
-                    expiresAt,
+            // 4. Record successful human verification
+            await LedgerModel.appendEntry({
+                documentId: document.id,
+                action: "VERIFY",
+                actorId: userId,
+                documentHash: document.original_hash,
+                metadata: {
+                    verificationType: "human",
+                    chunksIndexed: chunks.length,
                 },
-                "Time-limited secure watermarked share link created."
-            )
-        );
+            });
+
+            return res.status(200).json({
+                success: true,
+                message:
+                    "Document verified and indexed successfully.",
+                data: {
+                    document: verifiedDocument,
+                    chunksIndexed: chunks.length,
+                },
+            });
+
+        } catch (error) {
+            // If anything after verification fails,
+            // revoke the verification status.
+            try {
+                await DocumentModel.setVerifiedStatus(
+                    document.id,
+                    false
+                );
+
+                // Remove any partially created RAG chunks.
+                await query(
+                    `
+                DELETE FROM document_chunks
+                WHERE document_id = $1
+                `,
+                    [document.id]
+                );
+            } catch (rollbackError) {
+                Logger.error(
+                    `Verification rollback failed for document ${document.id}`,
+                    rollbackError
+                );
+            }
+
+            throw error;
+        }
     });
 
     /**
